@@ -29,6 +29,9 @@ struct ha_chassis_ordered {
     size_t n_ha_ch;
 };
 
+bool ha_chassis_group_is_preemptive(
+    const struct sbrec_ha_chassis_group *ha_chassis_grp);
+
 /* Returns true if the local chassis is the active gateway among a set
  * of gateway_chassis.  Return false if the local chassis is currently a
  * backup in a set of multiple gateway_chassis. */

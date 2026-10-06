@@ -5132,8 +5132,8 @@ tcp.flags = RST;
     <p>
       Table representing a group of chassis which can provide High availability
       services. Each chassis in the group is represented by the table
-      <ref table="HA_Chassis"/>. The HA chassis with highest priority will
-      be the active chassis of this group. If the active chassis failover is
+      <ref table="HA_Chassis"/>. By default, the highest-priority HA chassis
+      will be the active chassis of this group. If active chassis failover is
       detected, the HA chassis with the next higher priority takes over the
       responsibility of providing the HA. If <ref db="OVN_Southbound"
       table="Port_Binding" column="ha_chassis_group"/> column of the table
@@ -5147,6 +5147,32 @@ tcp.flags = RST;
 
     <column name="ha_chassis">
       A list of <ref table="HA_Chassis"/> which belongs to this group.
+    </column>
+
+    <column name="active_chassis">
+      <p>
+        The incumbent recorded by <code>ovn-controller</code> when it claims a
+        port in a non-preemptive group.  This is a preference, not a liveness
+        indication or a lock: BFD still determines which chassis are reachable.
+        When preemption is disabled, this chassis is preferred to all other
+        eligible group members for gateway election and tunnel forwarding.
+        If it is unreachable or no longer a member, configured priorities
+        select a replacement, which records itself here.
+      </p>
+      <p>
+        The incumbent is retained across port releases and controller restarts
+        while its <ref table="Chassis"/> row survives.  It is also
+        cleared by <code>ovn-northd</code> when preemption is enabled.  Do not
+        modify this column directly.
+      </p>
+    </column>
+
+    <column name="options" key="preempt" type='{"type": "boolean"}'>
+      Copied from <ref db="OVN_Northbound" table="HA_Chassis_Group"
+      column="options" key="preempt"/>.  For groups derived from legacy gateway
+      chassis, copied from the logical router port's
+      <ref db="OVN_Northbound" table="Logical_Router_Port" column="options"
+      key="ha-chassis-preempt"/>.  Defaults to <code>true</code>.
     </column>
 
     <column name="ref_chassis">

@@ -4322,6 +4322,15 @@ or
         logical router port.
       </column>
 
+      <column name="options" key="ha-chassis-preempt"
+              type='{"type": "boolean"}'>
+        Controls preemption for legacy <ref table="Gateway_Chassis"/>.
+        Defaults to <code>true</code>.  See <ref table="HA_Chassis_Group"
+        column="options" key="preempt"/> for the behavior and limitations.
+        If <ref column="ha_chassis_group"/> is set, the group's policy takes
+        precedence and this option is ignored.
+      </column>
+
       <group title="Options for Physical VLAN MTU Issues">
         <p>
           MTU issues arise in mixing tunnels with logical networks that are
@@ -6617,8 +6626,8 @@ or
     <p>
       Table representing a group of chassis which can provide high availability
       services. Each chassis in the group is represented by the table
-      <ref table="HA_Chassis"/>. The HA chassis with highest priority will
-      be the active chassis of this group. If the active chassis failover is
+      <ref table="HA_Chassis"/>. By default, the highest-priority HA chassis
+      will be the active chassis of this group. If active chassis failover is
       detected, the HA chassis with the next higher priority takes over the
       responsibility of providing the HA. If a distributed gateway router port
       references a row in this table, then the active HA chassis in this group
@@ -6631,6 +6640,32 @@ or
 
     <column name="ha_chassis">
       A list of HA chassis which belongs to this group.
+    </column>
+
+    <column name="options" key="preempt" type='{"type": "boolean"}'>
+      <p>
+        If <code>true</code> (the default), a reachable higher-priority chassis
+        preempts the active chassis.  If <code>false</code>, a reachable active
+        chassis remains active even when a higher-priority chassis recovers or
+        priorities change.  Priorities still select the initial active chassis
+        and replacements when the active chassis is unreachable or removed
+        from the group.  This policy also applies to external logical switch
+        ports referencing this group.
+      </p>
+      <p>
+        The elected chassis records the incumbent in the Southbound database.
+        Until this update reaches other chassis, including when the Southbound
+        database is unavailable, forwarding can still revert to a recovered
+        higher-priority chassis.  All controllers must support this option
+        before it is enabled.  Set this option to <code>true</code> to restore
+        priority-based selection.
+      </p>
+      <p>
+        This option does not delay elections while BFD sessions initialize.
+        A starting or rejoining chassis can elect a replacement before learning
+        that the incumbent is reachable, for example after group membership
+        changes recreate BFD sessions.
+      </p>
     </column>
 
     <group title="Common Columns">
@@ -6654,7 +6689,8 @@ or
     <column name="priority">
       <p>
         Priority of the chassis. Chassis with highest priority will be
-        the active chassis.
+        the active chassis, unless preemption is disabled for the group and
+        its active chassis is still reachable.
       </p>
     </column>
 

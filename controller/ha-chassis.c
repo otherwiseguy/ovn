@@ -22,6 +22,13 @@
 
 VLOG_DEFINE_THIS_MODULE(ha_chassis);
 
+bool
+ha_chassis_group_is_preemptive(
+    const struct sbrec_ha_chassis_group *ha_chassis_grp)
+{
+    return smap_get_bool(&ha_chassis_grp->options, "preempt", true);
+}
+
 static int
 compare_chassis_prio_(const void *a_, const void *b_)
 {
@@ -34,7 +41,9 @@ compare_chassis_prio_(const void *a_, const void *b_)
     return prio_diff;
 }
 
-/* Returns the ordered HA chassis list in the HA chassis group.
+/* Returns the ordered HA chassis list in the HA chassis group.  When
+ * preemption is disabled, an eligible incumbent precedes the priority-ordered
+ * list described below.
  * Eg. If an HA chassis group has 3 HA chassis
  *   - HA1 - pri 30
  *   - HA2 - pri 40 and
@@ -124,6 +133,22 @@ get_ordered_ha_chassis_list(const struct sbrec_ha_chassis_group *ha_ch_grp,
     } else {
         qsort(ha_ch_order, n_ha_ch, sizeof *ha_ch_order,
               compare_chassis_prio_);
+
+        /* Keep a reachable incumbent first when preemption is disabled.
+         * Filtering above ensures that a removed or unreachable incumbent
+         * cannot prevent failover.  Keep the configured priority order for
+         * all other candidates, including OpenFlow bundle backups. */
+        if (!ha_chassis_group_is_preemptive(ha_ch_grp)) {
+            for (size_t i = 1; i < n_ha_ch; i++) {
+                if (ha_ch_order[i].chassis == ha_ch_grp->active_chassis) {
+                    struct sbrec_ha_chassis incumbent = ha_ch_order[i];
+                    memmove(&ha_ch_order[1], &ha_ch_order[0],
+                            i * sizeof *ha_ch_order);
+                    ha_ch_order[0] = incumbent;
+                    break;
+                }
+            }
+        }
     }
 
     ordered_ha_ch = xmalloc(sizeof *ordered_ha_ch);

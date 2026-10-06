@@ -28,6 +28,7 @@ TESTSUITE_AT = \
 	tests/checkpatch.at \
 	tests/network-functions.at \
 	tests/ovn.at \
+	tests/ovn-ha-chassis.at \
 	tests/ovn-northd.at \
 	tests/ovn-nbctl.at \
 	tests/ovn-sbctl.at \

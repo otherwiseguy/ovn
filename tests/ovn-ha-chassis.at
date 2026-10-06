@@ -1,0 +1,245 @@
+m4_foreach([HA_CHASSIS_MODE], [group, legacy], [
+OVN_FOR_EACH_NORTHD([
+AT_SETUP([HA chassis non-preemptive election - HA_CHASSIS_MODE])
+AT_KEYWORDS([ha-chassis preemption])
+ovn_start
+
+net_add n1
+for chassis in hv1 gw1 gw2; do
+    sim_add $chassis
+    as $chassis
+    check ovs-vsctl add-br br-phys
+    case $chassis in
+        hv1) ip=192.0.2.1; mac=00:00:00:01:00:01 ;;
+        gw1) ip=192.0.2.2; mac=00:00:00:01:00:02 ;;
+        gw2) ip=192.0.2.3; mac=00:00:00:01:00:03 ;;
+    esac
+    check ovs-vsctl set Bridge br-phys other_config:hwaddr=$mac
+    ovn_attach n1 br-phys $ip
+done
+
+check as hv1 ovs-vsctl -- add-port br-int hv1-vif1 -- \
+    set Interface hv1-vif1 external_ids:iface-id=foo1
+for chassis in gw1 gw2; do
+    check as $chassis ovs-vsctl set Open_vSwitch . \
+        external_ids:ovn-bridge-mappings=phys:br-phys
+done
+
+check ovn-nbctl ls-add foo
+check ovn-nbctl ls-add alice
+check ovn-nbctl lr-add R1
+check ovn-nbctl lrp-add R1 foo 00:00:01:01:02:03 192.168.1.1/24
+check ovn-nbctl lsp-add foo rp-foo -- set Logical_Switch_Port rp-foo \
+    type=router options:router-port=foo -- lsp-set-addresses rp-foo router
+check ovn-nbctl lrp-add R1 alice 00:00:02:01:02:03 172.16.1.1/24
+check ovn-nbctl lsp-add alice rp-alice -- set Logical_Switch_Port rp-alice \
+    type=router options:router-port=alice -- lsp-set-addresses rp-alice router
+check ovn-nbctl lsp-add-localnet-port alice ln-alice phys
+check ovn-nbctl lsp-add foo foo1 -- \
+    lsp-set-addresses foo1 "f0:00:00:01:02:03 192.168.1.2"
+
+m4_if(HA_CHASSIS_MODE, [group], [
+check ovn-nbctl ha-chassis-group-add hagrp
+check ovn-nbctl ha-chassis-group-add-chassis hagrp gw1 20
+check ovn-nbctl ha-chassis-group-add-chassis hagrp gw2 10
+hagrp=$(ovn-nbctl --bare --columns=_uuid find HA_Chassis_Group name=hagrp)
+check ovn-nbctl set Logical_Router_Port alice ha_chassis_group=$hagrp
+# An external port shares the same incumbent as the router gateway.
+check ovn-nbctl lsp-add foo ext1 -- set Logical_Switch_Port ext1 \
+    type=external ha_chassis_group=$hagrp -- \
+    lsp-set-addresses ext1 "f0:00:00:01:02:04 192.168.1.3"
+group_name=hagrp
+ports="cr-alice ext1"
+set_priority() {
+    check ovn-nbctl ha-chassis-group-add-chassis hagrp "$1" "$2"
+}
+set_preempt() {
+    check ovn-nbctl --wait=hv set HA_Chassis_Group hagrp options:preempt="$1"
+}
+remove_chassis() {
+    check ovn-nbctl ha-chassis-group-remove-chassis hagrp "$1"
+}
+], [
+check ovn-nbctl lrp-set-gateway-chassis alice gw1 20
+check ovn-nbctl lrp-set-gateway-chassis alice gw2 10
+group_name=alice
+ports=cr-alice
+set_priority() {
+    check ovn-nbctl lrp-set-gateway-chassis alice "$1" "$2"
+}
+set_preempt() {
+    check ovn-nbctl --wait=hv set Logical_Router_Port alice \
+        options:ha-chassis-preempt="$1"
+}
+remove_chassis() {
+    check ovn-nbctl lrp-del-gateway-chassis alice "$1"
+}
+])
+
+OVN_POPULATE_ARP
+wait_for_ports_up
+ovn_wait_for_bfd_up hv1 gw1 gw2
+ovn_wait_for_bfd_up gw1 hv1 gw2
+ovn_wait_for_bfd_up gw2 hv1 gw1
+check ovn-nbctl --wait=hv sync
+
+# Avoid neighbor discovery for the routed packet checks below.
+dp_uuid=$(fetch_column Datapath_Binding _uuid external-ids:name=R1)
+check_uuid ovn-sbctl create MAC_Binding ip=172.16.1.2 datapath=$dp_uuid \
+    logical_port=alice mac='"f0:00:00:00:00:42"'
+check ovn-nbctl --wait=hv sync
+
+gw1_uuid=$(ovn-sbctl --bare --columns=_uuid find Chassis name=gw1)
+gw2_uuid=$(ovn-sbctl --bare --columns=_uuid find Chassis name=gw2)
+hv1_gw1_ofport=$(as hv1 ovs-vsctl get Interface ovn-gw1-0 ofport)
+hv1_gw2_ofport=$(as hv1 ovs-vsctl get Interface ovn-gw2-0 ofport)
+
+check_bindings() {
+    for port in $ports; do
+        test "$(ovn-sbctl get Port_Binding $port chassis)" = "$1" || return 1
+    done
+}
+check_bundle() {
+    as hv1 ovs-ofctl dump-flows br-int table=OFTABLE_REMOTE_OUTPUT | \
+        grep -q "active_backup,ofport,members:$1,$2"
+}
+check_incumbent() {
+    test "$(ovn-sbctl get HA_Chassis_Group $group_name active_chassis)" = "$1"
+}
+check_packet() {
+    as $1 reset_pcap_file br-phys_n1 $1/br-phys_n1
+    packet=000001010203f0000001020308004500001c0000000040110000
+    packet=${packet}c0a80102ac1001020035111100080000
+    check as hv1 ovs-appctl netdev-dummy/receive hv1-vif1 $packet
+    expected=f0000000004200000201020308004500001c000000003f110100
+    echo ${expected}c0a80102ac1001020035111100080000 > packet.expected
+    OVN_CHECK_PACKETS_CONTAIN([$1/br-phys_n1-tx.pcap], [packet.expected])
+}
+
+# The default is still preemptive.  Changing priority must change both port
+# ownership and the compute's bundle, even without a Port_Binding row update
+# originating from northd.
+OVS_WAIT_UNTIL([check_bindings $gw1_uuid])
+OVS_WAIT_UNTIL([check_bundle $hv1_gw1_ofport $hv1_gw2_ofport])
+set_priority gw2 30
+OVS_WAIT_UNTIL([check_bindings $gw2_uuid])
+OVS_WAIT_UNTIL([check_bundle $hv1_gw2_ofport $hv1_gw1_ofport])
+check ovn-nbctl --wait=hv sync
+check_packet gw2
+set_priority gw2 10
+OVS_WAIT_UNTIL([check_bindings $gw1_uuid])
+OVS_WAIT_UNTIL([check_bundle $hv1_gw1_ofport $hv1_gw2_ofport])
+
+# Disabling preemption preserves configured priorities.  A priority edit must
+# not move a healthy incumbent, including all ports in a shared HA group.
+set_preempt false
+OVS_WAIT_UNTIL([check_incumbent $gw1_uuid])
+AT_CHECK([ovn-sbctl get HA_Chassis_Group $group_name options:preempt],
+         [0], ["false"
+])
+set_priority gw2 30
+check ovn-nbctl --wait=hv sync
+AT_CHECK([check_bindings $gw1_uuid])
+AT_CHECK([check_bundle $hv1_gw1_ofport $hv1_gw2_ofport])
+set_priority gw2 10
+check ovn-nbctl --wait=hv sync
+
+# Fail the highest-priority chassis without deleting its Chassis row.
+# Pause its controller until recovery has restored all BFD sessions.  A
+# partially recovered gateway could otherwise reach the compute before the
+# incumbent, legitimately elect itself, and retain that new incumbency.
+as gw1
+check ovn-appctl -t ovn-controller debug/pause
+OVS_APP_EXIT_AND_WAIT([ovs-vswitchd])
+OVS_WAIT_UNTIL([check_bindings $gw2_uuid])
+OVS_WAIT_UNTIL([check_incumbent $gw2_uuid])
+OVS_WAIT_UNTIL([check_bundle $hv1_gw2_ofport $hv1_gw1_ofport])
+
+# Recover it.  After BFD is up everywhere, gateway ownership and forwarding
+# must remain on gw2, even though gw1 retains the higher configured priority.
+as gw1 start_daemon ovs-vswitchd --enable-dummy=system \
+    -vvconn -vofproto_dpif -vunixctl
+# Dummy interface addresses and routes are process-local, unlike a real host.
+AT_CHECK([as gw1 ovs-appctl netdev-dummy/ip4addr br-phys 192.0.2.2/24],
+         [0], [ignore])
+AT_CHECK([as gw1 ovs-appctl ovs/route/add 192.0.2.2/24 br-phys], [0], [ignore])
+OVN_POPULATE_ARP
+ovn_wait_for_bfd_up hv1 gw1 gw2
+ovn_wait_for_bfd_up gw1 hv1 gw2
+ovn_wait_for_bfd_up gw2 hv1 gw1
+check as gw1 ovn-appctl -t ovn-controller debug/resume
+check ovn-nbctl --wait=hv sync
+AT_CHECK([check_bindings $gw2_uuid])
+AT_CHECK([check_incumbent $gw2_uuid])
+AT_CHECK([check_bundle $hv1_gw2_ofport $hv1_gw1_ofport])
+check_packet gw2
+
+# A transient unbound port must not erase the group incumbent.
+check ovn-sbctl clear Port_Binding cr-alice chassis
+OVS_WAIT_UNTIL([check_bindings $gw2_uuid])
+AT_CHECK([check_incumbent $gw2_uuid])
+
+# Non-preemptive does not mean pinned: fail the incumbent and verify that
+# its replacement remains preferred when the incumbent recovers.
+as gw2
+check ovn-appctl -t ovn-controller debug/pause
+OVS_APP_EXIT_AND_WAIT([ovs-vswitchd])
+OVS_WAIT_UNTIL([check_bindings $gw1_uuid])
+OVS_WAIT_UNTIL([check_incumbent $gw1_uuid])
+as gw2 start_daemon ovs-vswitchd --enable-dummy=system \
+    -vvconn -vofproto_dpif -vunixctl
+AT_CHECK([as gw2 ovs-appctl netdev-dummy/ip4addr br-phys 192.0.2.3/24],
+         [0], [ignore])
+AT_CHECK([as gw2 ovs-appctl ovs/route/add 192.0.2.3/24 br-phys], [0], [ignore])
+OVN_POPULATE_ARP
+ovn_wait_for_bfd_up hv1 gw1 gw2
+ovn_wait_for_bfd_up gw1 hv1 gw2
+ovn_wait_for_bfd_up gw2 hv1 gw1
+check as gw2 ovn-appctl -t ovn-controller debug/resume
+check ovn-nbctl --wait=hv sync
+AT_CHECK([check_bindings $gw1_uuid])
+AT_CHECK([check_bundle $hv1_gw1_ofport $hv1_gw2_ofport])
+check_packet gw1
+
+# A healthy higher-priority backup still must not preempt the incumbent.
+set_priority gw2 40
+check ovn-nbctl --wait=hv sync
+AT_CHECK([check_bindings $gw1_uuid])
+AT_CHECK([check_bundle $hv1_gw1_ofport $hv1_gw2_ofport])
+
+# Check incremental processing while both gateways are still in the group.
+for chassis in hv1 gw1 gw2; do
+    CHECK_AFTER_RECOMPUTE([$chassis], [$chassis])
+done
+
+# The operator can restore priority-based election explicitly.
+set_preempt true
+OVS_WAIT_UNTIL([check_bindings $gw2_uuid])
+OVS_WAIT_UNTIL([check_bundle $hv1_gw2_ofport $hv1_gw1_ofport])
+check ovn-nbctl --wait=hv sync
+check_packet gw2
+AT_CHECK([ovn-sbctl get HA_Chassis_Group $group_name active_chassis],
+         [0], [[[]
+]])
+
+# Removing the incumbent invalidates the preference and permits a successor.
+set_preempt false
+OVS_WAIT_UNTIL([check_incumbent $gw2_uuid])
+remove_chassis gw2
+OVS_WAIT_UNTIL([check_bindings $gw1_uuid])
+OVS_WAIT_UNTIL([check_incumbent $gw1_uuid])
+
+# Restarting ovs-vswitchd changes the BFD discriminator, so packets still in
+# flight can carry the old value.
+OVN_CLEANUP([hv1
+/Incorrect your_disc/d
+], [gw1
+/transaction error/d
+/Incorrect your_disc/d
+], [gw2
+/transaction error/d
+/Incorrect your_disc/d
+])
+AT_CLEANUP
+])
+])

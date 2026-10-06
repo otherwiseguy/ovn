@@ -1500,6 +1500,19 @@ claim_lport(const struct sbrec_port_binding *pb,
 
     /* Check if the port encap binding, if any, has changed */
     if (can_bind == CAN_BIND_AS_MAIN) {
+        const struct sbrec_ha_chassis_group *group = pb->ha_chassis_group;
+        if (!sb_readonly && pb->chassis == chassis_rec && group &&
+            !ha_chassis_group_is_preemptive(group) &&
+            group->active_chassis != chassis_rec) {
+            /* Publish the group incumbent with the port claim.  Retain it
+             * across port releases so a temporary unbound port does not
+             * restore priority-based preemption.  Verification prevents a
+             * stale election from overwriting a newer incumbent. */
+            sbrec_ha_chassis_group_verify_active_chassis(group);
+            sbrec_ha_chassis_group_verify_options(group);
+            sbrec_ha_chassis_group_verify_ha_chassis(group);
+            sbrec_ha_chassis_group_set_active_chassis(group, chassis_rec);
+        }
         return update_port_encap_if_needed(
             pb, chassis_rec, iface_rec, sb_readonly);
     } else if (can_bind == CAN_BIND_AS_ADDITIONAL) {

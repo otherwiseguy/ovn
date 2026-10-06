@@ -24,6 +24,7 @@ m4_include([tests/network-functions.at])
 
 m4_include([tests/ovn-ipam.at])
 m4_include([tests/ovn.at])
+m4_include([tests/ovn-ha-chassis.at])
 m4_include([tests/ovn-performance.at])
 m4_include([tests/ovn-northd.at])
 m4_include([tests/ovn-nbctl.at])

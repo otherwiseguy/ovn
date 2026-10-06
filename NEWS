@@ -1,5 +1,8 @@
 Post v26.09.0
 --------------
+   - Add HA_Chassis_Group.options:preempt and the legacy router port option
+     ha-chassis-preempt to opt into non-preemptive gateway and external port
+     failover.  The default remains priority-based preemption.
    - Learn ARP sender hardware address (arp.sha) and IPv6 Neighbor
      Discovery link-layer addresses (nd.tll, nd.sll) into the FDB
      table in addition to eth.src.  This allows VRRP virtual MACs to

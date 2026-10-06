@@ -7539,6 +7539,10 @@ inc_proc_ovn_controller_init(
     engine_add_input(&en_runtime_data, &en_sb_chassis, NULL);
     engine_add_input(&en_runtime_data, &en_sb_datapath_binding,
                      runtime_data_sb_datapath_binding_handler);
+    /* The IDL also tracks Port_Binding rows when their HA_Chassis_Group or
+     * HA_Chassis references change.  Process those changes through the port
+     * binding handlers for runtime data and flows, avoiding full recomputes
+     * on unrelated chassis. */
     engine_add_input(&en_runtime_data, &en_sb_port_binding,
                      runtime_data_sb_port_binding_handler);
     /* Reuse the same handler for any previously postponed ports. */

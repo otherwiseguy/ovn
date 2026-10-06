@@ -2251,6 +2251,13 @@ sbpb_gw_chassis_needs_update(
         return true;
     }
 
+    bool preempt = smap_get_bool(&lrp->options, "ha-chassis-preempt", true);
+    if (preempt != smap_get_bool(&pb->ha_chassis_group->options,
+                                 "preempt", true) ||
+        (preempt && pb->ha_chassis_group->active_chassis)) {
+        return true;
+    }
+
     if (lrp->n_gateway_chassis != pb->ha_chassis_group->n_ha_chassis) {
         return true;
     }
@@ -2435,6 +2442,11 @@ sync_ha_chassis_group_for_sbpb(
         free(sb_ha_chassis);
     }
 
+    sbrec_ha_chassis_group_set_options(sb_ha_grp, &nb_ha_grp->options);
+    if (smap_get_bool(&nb_ha_grp->options, "preempt", true) &&
+        sb_ha_grp->active_chassis) {
+        sbrec_ha_chassis_group_set_active_chassis(sb_ha_grp, NULL);
+    }
     sbrec_port_binding_set_ha_chassis_group(pb, sb_ha_grp);
 }
 
@@ -2481,6 +2493,15 @@ copy_gw_chassis_from_nbrp_to_sbpb(
 
     sbrec_ha_chassis_group_set_ha_chassis(sb_ha_chassis_group,
                                           sb_ha_chassis, n_sb_ha_ch);
+    const struct smap options = SMAP_CONST1(
+        &options, "preempt",
+        smap_get_bool(&lrp->options, "ha-chassis-preempt", true)
+        ? "true" : "false");
+    sbrec_ha_chassis_group_set_options(sb_ha_chassis_group, &options);
+    if (smap_get_bool(&options, "preempt", true) &&
+        sb_ha_chassis_group->active_chassis) {
+        sbrec_ha_chassis_group_set_active_chassis(sb_ha_chassis_group, NULL);
+    }
     sbrec_port_binding_set_ha_chassis_group(port_binding, sb_ha_chassis_group);
     free(sb_ha_chassis);
 }

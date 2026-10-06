@@ -112,6 +112,10 @@ static const char *rbac_port_binding_update[] =
 
 static const char *rbac_mac_binding_auth[] =
     {""};
+static const char *rbac_ha_chassis_group_auth[] =
+    {""};
+static const char *rbac_ha_chassis_group_update[] =
+    {"active_chassis"};
 static const char *rbac_mac_binding_update[] =
     {"logical_port", "ip", "mac", "datapath", "timestamp"};
 
@@ -142,6 +146,15 @@ static struct rbac_perm_cfg {
     int n_update;
     const struct sbrec_rbac_permission *row;
 } rbac_perm_cfg[] = {
+    {
+        .table = "HA_Chassis_Group",
+        .auth = rbac_ha_chassis_group_auth,
+        .n_auth = ARRAY_SIZE(rbac_ha_chassis_group_auth),
+        .insdel = false,
+        .update = rbac_ha_chassis_group_update,
+        .n_update = ARRAY_SIZE(rbac_ha_chassis_group_update),
+        .row = NULL
+    },
     {
         .table = "Chassis",
         .auth = rbac_chassis_auth,
